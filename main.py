@@ -1,15 +1,23 @@
+# ----------------------------- Autor: Ilya Latypov ---------------------------
+# +++          TRIAL: pygame project
+#
+
 import pygame as pg
-import os, sys
+import os
 import abc
 from random import randint
 
 
 # DAY1:     Created base, don't tested.
-# DAY2:TODO Manage drawing, start working on UserInput, make player
-# DAY3:TODO Make animation_class, start working on a float-pos problem
+# DAY2:     Manage drawing, start working on UserInput, make player
+# DAY3:     Make animation_class, start working on a float-pos problem
+# DAY4:     Solve a float-pos problem, add screen motion, make stable build of preview
+# DAY5:TODO Create a cube.
 
 
 def perform(func, *args, **kwargs):
+    """Вспомогательная функция. При выполнении возвращаемой функции указанные аргументы
+    будут подставлены вместо переданных при вызове. Создана для следующей функции"""
     def f(*_, **__):
         nonlocal func, args, kwargs
         func(*args, **kwargs)
@@ -17,10 +25,14 @@ def perform(func, *args, **kwargs):
 
 
 def concat(*funcs):
+    """Вспомогательная функция. При выполнении возвращаемой функции будут последовательно
+    выполнены все функции, переданные в качестве аргумента. Аргументы в вызываемые функции
+    ставиться не будут. (пользоваться perform)"""
     return lambda *_: [i() for i in funcs]
 
 
 def load_image(name, chr_key=None) -> pg.Surface:
+    """Загрузить изображение из папки data с указанным именем и конвертировать"""
     fullname = os.path.join('data', name)
     image = pg.image.load(fullname).convert()
 
@@ -34,6 +46,7 @@ def load_image(name, chr_key=None) -> pg.Surface:
 
 
 def load_data():
+    """Загрузка всех файлов игры"""
     global IMG
     IMG["empty"] = load_image("empty.png")
     IMG["wall"] = load_image("wall.png")
@@ -44,9 +57,9 @@ def load_data():
     IMG["door_closed"] = load_image("door_closed.png")
 
 
-IMG = {}
-me = None
-action_socket = {}
+IMG = {}            # Словарь, содержащий загруженные изображения
+me = None           # Будущий Объект GMain. Хранится для доступа без передачи в качестве аргумента
+action_socket = {}  # Хранилище логических ячеек, нужен для указания того, может ли GAction выполниться сейчас
 
 
 #  CONSTS --------------------
@@ -59,9 +72,10 @@ DEFAULT_IMAGE = "default"
 
 
 class GMachine(metaclass=abc.ABCMeta):
-    """The class of game_cycle machine.
-    Default: [START] -> ([HANDLE_INPUT] -> [MANAGE_CYCLE]) -> [QUIT].
-    Has abstract that abstract methods and one implemented 'Main'"""
+    """
+    Абстрактный класс игровой машины. Представлен следующей структурой:
+        [START] -> ([HANDLE_INPUT] -> [MANAGE_CYCLE]) -> [QUIT].
+    От него наследуются состояния игры (запущен уровень/находимся в меню/...)"""
     @abc.abstractmethod
     def start(self):
         pass
@@ -72,10 +86,12 @@ class GMachine(metaclass=abc.ABCMeta):
 
     @abc.abstractmethod
     def handle_input(self):
+        """Функция, которая обрабатывает действия пользователя и вызывает необходимые функции."""
         pass
 
     @abc.abstractmethod
     def manage_cycle(self):
+        """Функция, которая очищает очередь и обновляет графику."""
         pass
     
     def main(self):
@@ -89,6 +105,8 @@ class GMachine(metaclass=abc.ABCMeta):
 
 
 class GSprite(pg.sprite.Sprite):
+    """Наследование класса спрайта. Создан, в основном, для удобства, а также решения проблемы
+    нецелых координат"""
     def __init__(self, rectf=None, image=None, groups=()):
         super(GSprite, self).__init__(*groups)
         self.image = image if image is not None else IMG[DEFAULT_IMAGE]
@@ -101,17 +119,17 @@ class GSprite(pg.sprite.Sprite):
             self.rectf = rectf
         self.commit()
 
-    def move(self, dx, dy):
+    def move(self, dx, dy):     # Передвинуть на dx dy
         self.rectf[0] += dx
         self.rectf[1] += dy
         self.commit()
 
-    def stand(self, nx, ny):
+    def stand(self, nx, ny):    # Поместить в nx ny
         self.rectf[0] = nx
         self.rectf[1] = ny
         self.commit()
 
-    def scale(self, nw, nh, image_scale=False):
+    def scale(self, nw, nh, image_scale=False):     # Установить размер
         self.rectf[2] = nw
         self.rectf[3] = nh
         if image_scale:
@@ -124,14 +142,16 @@ class GSprite(pg.sprite.Sprite):
     def size(self):
         return self.rectf[2], self.rectf[3]
 
-    def commit(self):
-        self.rect = pg.Rect(int(self.rectf[0]),
+    def commit(self):                               # Перевод нецелых координат в целые. Вызывается
+        self.rect = pg.Rect(int(self.rectf[0]),     # после любого изменения объекта
                             int(self.rectf[1]),
                             int(self.rectf[2]),
                             int(self.rectf[3]))
 
 
 class GAction:
+    """Класс запрограммированного действия. В зависимости от значения в action_socket
+    может выполниться или нет. Если выполнился, то без изменения значения в ячейке более не запустится."""
     def __init__(self, socket_name: str, action):
         self.socket = socket_name
         if socket_name not in action_socket:
@@ -151,6 +171,11 @@ class GAction:
 
 
 class GAnimation(GAction):
+    """Класс анимации. Является долгосрочным вариантом GAction. Делает работу в течении
+    dur циклов, после чего освобождает свой сокет. На каждом цикле вызывает функцию do.
+    Сам цикл выполняется вместе с циклом машины, и будет помещаться в очередь, пока
+    не пройдет dur циклов. При окончании вызывает функцию on_end.
+    Сам по себе является абстрактным, и в коде в чистом виде быть не должен."""
     def __init__(self, dur: int, socket_name: str, on_end):
         super(GAnimation, self).__init__(socket_name, self.start)
         self.dur = dur
@@ -175,6 +200,7 @@ class GAnimation(GAction):
 
 
 class GSpriteMoveAnimation(GAnimation):
+    """Специализированный класс анимации для плавного передвижения спрайта target по экрану"""
     def __init__(self, target: GSprite, dx, dy, dur: int, on_end=lambda: None):
         super(GSpriteMoveAnimation, self).__init__(dur, "MOVE_ANIMATION-GS{}".format(str(target.ident)), on_end)
         self.tar = target
@@ -186,6 +212,7 @@ class GSpriteMoveAnimation(GAnimation):
 
 
 class GSpriteFadeAnimation(GAnimation):
+    """Экспериментальный и непроверенный класс анимации плавного изменения изображения спрайта"""
     def __init__(self, target: GSprite, new_image: pg.Surface, dur: int, on_end=lambda: None):
         super(GSpriteFadeAnimation, self).__init__(dur, "FADE_ANIMATION-GS{}".format(str(target.ident)), on_end)
         self.tar = target
@@ -208,6 +235,7 @@ class GSpriteFadeAnimation(GAnimation):
 
 
 class GCamera:
+    """Класс камеры. По умолчанию наблюдает за игроком"""
     def __init__(self):
         self.dx = 0
         self.dy = 0
@@ -223,6 +251,11 @@ class GCamera:
 
 
 class Cell(GSprite):
+    """Класс клетки клетчатого поля. Является в некотором роде абстрактным и
+    явно использоваться не должен. Имеет словарь свойств (используются игрой) и
+    массив connect. Он используется для коммуникации м-у клетками. Для отправки сигнала
+    всем клеткам используется send(), при получении вызывается receive(). Остальные
+    функции вызываются игрой"""
     def __init__(self, image=None):
         super(Cell, self).__init__(image=image)
         self.params = {
@@ -253,6 +286,8 @@ class Cell(GSprite):
 
 
 def GetCell(char: str):
+    """Функция перекодировки символа в класс клетки. Используется при чтении и интерпретации файла уровня
+    в текстовом виде"""
     return {
         " ": EmptyCell(),
         "*": WallCell(),
@@ -262,18 +297,18 @@ def GetCell(char: str):
     }[char]
 
 
-class EmptyCell(Cell):
+class EmptyCell(Cell):      # Класс пустой клетки (по ней можно ходить)
     def __init__(self):
         super(EmptyCell, self).__init__(IMG["empty"])
 
 
-class WallCell(Cell):
+class WallCell(Cell):       # Класс клетки стены (в этой версии она цвета фона)
     def __init__(self):
         super(WallCell, self).__init__(IMG["default"])
         self.params["walkable"] = False
 
 
-class EButtonCell(Cell):
+class EButtonCell(Cell):    # Класс клетки, встав на которую и нажав английскую E что-то произойдет
     def __init__(self):
         super(EButtonCell, self).__init__(IMG["button"])
 
@@ -281,7 +316,7 @@ class EButtonCell(Cell):
         self.send()
 
 
-class DoorCell(Cell):
+class DoorCell(Cell):       # Класс клетки двери, которая меняет свое состояние при получении сигнала
     def __init__(self, closed=True):
         if closed:
             super(DoorCell, self).__init__(IMG["door_closed"])
@@ -302,6 +337,9 @@ class DoorCell(Cell):
 
 
 class Field(GSprite):
+    """Класс игрвого клетчатого поля. Реализует расстоновку клеток, также вычислению
+    абсолютной позиции предмета в клетке, также генерацию уровня из текстового файла
+    """
     def __init__(self, matrix=None, groups=()):
         super(Field, self).__init__(rectf=None, image=None, groups=groups)
         self.mt_groups = groups
@@ -336,6 +374,8 @@ class Field(GSprite):
 
     @staticmethod
     def Load(file_name, *groups):
+        """Интерпретирует текстовый вид уровня в сам уровень с помощью имеющегося синтаксиса
+        TODO документация по синтаксису"""
         inp = open(file_name, "r").read().split("\n\n")
 
         mt = [[GetCell(c) for c in row] for row in inp[0].split("\n")]
@@ -348,6 +388,7 @@ class Field(GSprite):
 
 
 class Player(GSprite):
+    """Класс игрока, как объекта, наделенного способностью красиво (анимированно) ходить по полю"""
     def __init__(self, field, field_pos, *groups):
         super(Player, self).__init__(rectf=[0, 0, CELL_SIZE, CELL_SIZE], image=IMG["player"], groups=groups)
         self.field = field
@@ -359,16 +400,22 @@ class Player(GSprite):
         nx, ny = self.field.place((nc, nr))
         if self.field.mt[nr][nc].params["walkable"]:
             act = GAction("PLAYER_WALK".format(str(nr), str(nc)), lambda: None)
+            # Создается экземпляр GAction с пустой функцией
             act.action = concat(GSpriteMoveAnimation(self, nx - self.pos()[0], ny - self.pos()[1],
                                                      5, on_end=act.socket_receive).exec,
                                 perform(self.set_field_pos, nr, nc))
+            # Пустая функция заменяется на:
+            #   1) Запустить анимацию, после окончания очистить сокет "PLAYER_WALK"
+            #   2) Сменить фактическое положение персонажа на клетчатом поле
             act.exec()
 
-    def set_field_pos(self, nr, nc):
+    def set_field_pos(self, nr, nc):    # Присвоение позиции на поле
         self.field_pos = self.r, self.c = nr, nc
 
 
 class GMain(GMachine):
+    """Класс Main, занимающийся исполнением уровней. Пока игра содержит лишь один уровень
+    - вызывается по умолчанию. Содержит очередь функций, счетчик цикла, а также группы спрайтов"""
     def __init__(self, *args):
         self.exit_code = 1
         self.g_cycle = 0
@@ -422,14 +469,15 @@ class GMain(GMachine):
                 elif event.key == pg.K_e:
                     r, c = self.player.field_pos
                     self.field.mt[int(r)][int(c)].on_activation()
+
+    def manage_cycle(self):
+        self.g_cycle += 1
+
         _ = self.queue.copy()
         while len(_) > 0:
             # print(_)
             _.pop(0)()
             self.queue.pop(0)
-
-    def manage_cycle(self):
-        self.g_cycle += 1
 
         # noinspection PyArgumentList
         pg.draw.rect(self.screen, pg.Color(1, 5, 14), pg.Rect(0, 0, self.window_width, self.window_height))
