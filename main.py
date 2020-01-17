@@ -1,5 +1,5 @@
 # ----------------------------- Autor: Ilya Latypov ---------------------------
-# +++          TRIAL: pygame project
+# +++          TRIAL. pygame project
 #
 
 import pygame as pg
@@ -12,7 +12,7 @@ from random import randint
 # DAY2:     Manage drawing, start working on UserInput, make player
 # DAY3:     Make animation_class, start working on a float-pos problem
 # DAY4:     Solve a float-pos problem, add screen motion, make stable build of preview
-# DAY5:TODO Create a cube.
+# DAY5:     Create a cube.
 
 
 def perform(func, *args, **kwargs):
@@ -20,7 +20,7 @@ def perform(func, *args, **kwargs):
     будут подставлены вместо переданных при вызове. Создана для следующей функции"""
     def f(*_, **__):
         nonlocal func, args, kwargs
-        func(*args, **kwargs)
+        return func(*args, **kwargs)
     return f
 
 
@@ -55,6 +55,10 @@ def load_data():
     IMG["button"] = load_image("button.png")
     IMG["door_open"] = load_image("door_open.png")
     IMG["door_closed"] = load_image("door_closed.png")
+    IMG["cube"] = load_image("cube.png")
+    IMG["cube_dispenser"] = load_image("cube_dispenser.png")
+    IMG["pressure_button_activated"] = load_image("pressure_button_activated.png")
+    IMG["pressure_button_deactivated"] = load_image("pressure_button_deactivated.png")
 
 
 IMG = {}            # Словарь, содержащий загруженные изображения
@@ -110,7 +114,6 @@ class GSprite(pg.sprite.Sprite):
     def __init__(self, rectf=None, image=None, groups=()):
         super(GSprite, self).__init__(*groups)
         self.image = image if image is not None else IMG[DEFAULT_IMAGE]
-        self.image: pg.Surface
         self.ident = str(randint(100, 100000000000))
         if rectf is None:
             self.rectf = self.image.get_rect()
@@ -136,11 +139,36 @@ class GSprite(pg.sprite.Sprite):
             pg.transform.scale(self.image, (nw, nh))
         self.commit()
 
+    def centerF(self):
+        return self.rectf[0] + self.rectf[2] / 2, self.rectf[1] + self.rectf[3] / 2
+
+    def center(self):
+        x, y = self.centerF()
+        return int(x), int(y)
+
+    def centrify(self, o):
+        assert isinstance(o, GSprite)
+        cx, cy = self.centerF()
+        ow, oh = o.size()
+        o.stand(cx - ow / 2, cy - oh / 2)
+
     def pos(self):
         return self.rectf[0], self.rectf[1]
 
+    def x(self):
+        return self.rectf[0]
+
+    def y(self):
+        return self.rectf[1]
+
     def size(self):
         return self.rectf[2], self.rectf[3]
+
+    def w(self):
+        return self.rectf[2]
+
+    def h(self):
+        return self.rectf[3]
 
     def commit(self):                               # Перевод нецелых координат в целые. Вызывается
         self.rect = pg.Rect(int(self.rectf[0]),     # после любого изменения объекта
@@ -260,28 +288,43 @@ class Cell(GSprite):
         super(Cell, self).__init__(image=image)
         self.params = {
             "walkable": True,
+            "activatable": False,
+            "takeables": [],
         }
         self.connect = []
-        self.field = None
-        self.pos = None
+        self.field_pos = None
 
-    def setup(self, field, self_pos):
-        field: Field
-        self.field = field
-        self.pos = self_pos
-        self.add(*self.field.mt_groups)
+    def setup(self, field_pos):
+        field_pos: Field.FieldMatrix.MatrixPos
+        self.field_pos = field_pos
+        self.add(*self.field_pos.owner().mt_groups)
 
-    def send(self):
+    def send(self, positive=True):
         for c in self.connect:
-            c.on_receive()
+            if positive:
+                c.on_positive_receive()
+            else:
+                c.on_negative_receive()
 
     def on_stand(self):
+        pass
+
+    def on_leave(self):
+        pass
+
+    def on_cube_set(self):
+        pass
+
+    def on_cube_take(self):
         pass
 
     def on_activation(self):
         pass
 
-    def on_receive(self):
+    def on_positive_receive(self):
+        pass
+
+    def on_negative_receive(self):
         pass
 
 
@@ -289,12 +332,14 @@ def GetCell(char: str):
     """Функция перекодировки символа в класс клетки. Используется при чтении и интерпретации файла уровня
     в текстовом виде"""
     return {
-        " ": EmptyCell(),
-        "*": WallCell(),
-        "B": EButtonCell(),
-        "d": DoorCell(False),
-        "D": DoorCell(True),
-    }[char]
+        " ": perform(EmptyCell),
+        "*": perform(WallCell),
+        "B": perform(EButtonCell),
+        "d": perform(DoorCell, False),
+        "D": perform(DoorCell, True),
+        "C": perform(CubeDispenserCell),
+        "_": perform(PressureButtonCell),
+    }[char]()
 
 
 class EmptyCell(Cell):      # Класс пустой клетки (по ней можно ходить)
@@ -311,9 +356,10 @@ class WallCell(Cell):       # Класс клетки стены (в этой в
 class EButtonCell(Cell):    # Класс клетки, встав на которую и нажав английскую E что-то произойдет
     def __init__(self):
         super(EButtonCell, self).__init__(IMG["button"])
+        self.params["activatable"] = True
 
     def on_activation(self):
-        self.send()
+        self.send(True)
 
 
 class DoorCell(Cell):       # Класс клетки двери, которая меняет свое состояние при получении сигнала
@@ -325,19 +371,145 @@ class DoorCell(Cell):       # Класс клетки двери, которая
         self.params["walkable"] = False
         self.open = False
 
-    def on_receive(self):
-        print("got it!")
-        self.open = not self.open
+    def on_positive_receive(self):
+        self.open = True
+        self.params["walkable"] = True
+        self.image = IMG["door_open"]
 
-        self.params["walkable"] = self.open
-        if self.open:
-            self.image = IMG["door_open"]
+    def on_negative_receive(self):
+        self.open = False
+        self.params["walkable"] = False
+        self.image = IMG["door_closed"]
+
+
+class DispenserCell(Cell):
+    def __init__(self, takeable, auto_new=True, auto_first=True, image=None):
+        assert isinstance(takeable, Takeable)
+        super(DispenserCell, self).__init__(image)
+        takeable.on_death = concat(takeable.on_death, self.on_item_death)
+        self.item = takeable
+        self.auto_new = auto_new
+        self.auto_first = auto_first
+
+    def create_new(self):
+        self.item.create(self.field_pos)
+
+    def on_item_death(self):
+        pass
+
+
+class CubeDispenserCell(DispenserCell):
+    def __init__(self, auto_new_cube=True, auto_first_cube=True):
+        super(CubeDispenserCell, self).__init__(Cube((me.all_sprites, me.takeable_group)),
+                                                auto_new=auto_new_cube,
+                                                auto_first=auto_first_cube,
+                                                image=IMG["cube_dispenser"])
+        self.act = GAction("CUBE_DISPENSER_{}".format(self.ident), self.create_new)
+
+    def on_positive_receive(self):
+        self.act.exec()
+
+    def on_item_death(self):
+        self.act.socket_receive()
+
+
+class PressureButtonCell(Cell):
+    def __init__(self):
+        super(PressureButtonCell, self).__init__(IMG["pressure_button_deactivated"])
+        self.standing = False
+        self.takeable_lying = False
+
+    def on_stand(self):
+        self.standing = True
+        self.check()
+
+    def on_leave(self):
+        self.standing = False
+        self.check()
+
+    def on_cube_set(self):
+        self.takeable_lying = True
+        self.check()
+
+    def on_cube_take(self):
+        self.takeable_lying = False
+        self.check()
+
+    def check(self):
+        if self.standing or self.takeable_lying:
+            self.image = IMG["pressure_button_activated"]
+            self.send(True)
         else:
-            self.image = IMG["door_closed"]
+            self.image = IMG["pressure_button_deactivated"]
+            self.send(False)
+
+
+class Takeable(GSprite):
+    def __init__(self, image=None, groups=()):
+        super(Takeable, self).__init__(image=image, groups=groups)
+        self.kill()
+        self.field_pos = None
+
+    def create(self, field_pos):
+        assert isinstance(field_pos, FieldPos)
+        self.add(me.takeable_group)
+        self.field_pos = field_pos
+        self.stand(self.field_pos.get().x() + randint(0, self.field_pos.get().w() - self.w()),
+                   self.field_pos.get().y() + randint(0, self.field_pos.get().h() - self.h()))
+        self.image.set_alpha(255)
+        field_pos.get().params["takeables"].append(self)
+        self.on_create()
+
+    def clone(self):
+        return Takeable(self.image, self.groups())
+
+    def take(self):
+        global me
+        if me.player.hold is not None:
+            raise Exception("Trying to take a Takeable while holding another Takeable")
+        me.player.hold = self
+        self.field_pos.get().params["takeables"].remove(self)
+        me.player.centrify(self)
+        me.takeable_group.remove(self)
+        me.player_group.add(self)
+        self.field_pos.get().on_cube_take()
+        self.on_take()
+
+    def die(self):
+        if me.player.hold == self:
+            raise Exception("Trying to kill Takeable while player holding it")
+        else:
+            self.field_pos.get().params["takeables"].remove(self)
+            self.image.set_alpha(0)
+            self.field_pos = None
+            self.on_death()
+
+    def on_take(self):
+        pass
+
+    def on_release(self):
+        pass
+
+    def on_positive_receive(self):
+        pass
+
+    def on_negative_receive(self):
+        pass
+
+    def on_death(self):
+        pass
+
+    def on_create(self):
+        pass
+
+
+class Cube(Takeable):
+    def __init__(self, groups=()):
+        super(Cube, self).__init__(IMG["cube"], groups=groups)
 
 
 class Field(GSprite):
-    """Класс игрвого клетчатого поля. Реализует расстоновку клеток, также вычислению
+    """Класс игрвого клетчатого поля. Реализует расстановку клеток, также вычислению
     абсолютной позиции предмета в клетке, также генерацию уровня из текстового файла
     """
     def __init__(self, matrix=None, groups=()):
@@ -345,32 +517,136 @@ class Field(GSprite):
         self.mt_groups = groups
         if matrix is None:
             log("Init without matrix", "__init__", "field")
-            self.mt = [[EmptyCell() for i in range(FIELD_WIDTH)] for k in range(FIELD_HEIGHT)]
+            self.mt = self.FieldMatrix(self, [[EmptyCell() for i in range(FIELD_WIDTH)]
+                                              for k in range(FIELD_HEIGHT)])
             log("Matrix creation ended.", "__init__", "field")
         else:
             log("Init with matrix", "__init__", "field")
-            self.mt = matrix
-            for y, row in enumerate(self.mt):
-                for x, item in enumerate(row):
-                    item.image = pg.transform.scale(item.image, (CELL_SIZE, CELL_SIZE))
-                    item.setup(self, (x, y))
+            if isinstance(matrix, self.FieldMatrix):
+                self.mt = matrix
+            else:
+                self.mt = self.FieldMatrix(self, matrix)
+            for pos in self.mt:
+                pos.get().image = pg.transform.scale(pos.get().image, (CELL_SIZE, CELL_SIZE))
+                pos.get().setup(pos)
             log("Matrix check and transform ended.", "__init__", "field")
 
-        self.size = self.width, self.height = len(self.mt), len(self.mt[0])
+        self.size = self.width, self.height = self.mt.size()
         self.scale(self.width * CELL_SIZE, self.height * CELL_SIZE)
+
+    class FieldMatrix:
+        def __init__(self, field, _list: list):
+            self._field = field
+            self._items = _list
+            if len(_list) == 0 or len(_list[0]) == 0:
+                raise AttributeError("Invalid matrix size")
+
+        class MatrixPos:
+            def __init__(self, field, *p):
+                assert isinstance(field, Field)
+                self._field = field
+                self._mt = field.mt
+                try:
+                    assert len(p) == 1 or len(p) == 2
+                    if len(p) == 1:
+                        assert isinstance(p[0], tuple)
+                        self._r, self._c = p[0][0], p[0][1]
+                    elif len(p) == 2:
+                        assert isinstance(p[0], int)
+                        assert isinstance(p[1], int)
+                        self._r, self._c = p[0], p[1]
+                except AssertionError:
+                    raise AttributeError("Wrong count or type of arguments")
+
+            def get(self) -> Cell:
+                return self._mt[self._r, self._c]
+
+            def set(self, value: Cell):
+                self._mt[self._r, self._c] = value
+
+            def change(self, dr: int, dc: int):
+                self._r += dr
+                self._c += dc
+                if not (0 <= self._r < self._mt.row_count() and 0 <= self._c < self._mt.column_count()):
+                    raise IndexError("Matrix indexes out of range!")
+
+            def stand(self, nr: int, nc: int):
+                self._r = nr
+                self._c = nc
+                if not (0 <= self._r < self._mt.row_count() and 0 <= self._c < self._mt.column_count()):
+                    raise IndexError("Matrix indexes out of range!")
+
+            def pos(self):
+                return self._r, self._c
+
+            def r(self):
+                return self._r
+
+            def c(self):
+                return self._c
+
+            def owner(self):
+                return self._field
+
+            def __str__(self):
+                return f"{self._r}, {self._c}"
+
+            def __repr__(self):
+                return self.__str__()
+
+        def __getitem__(self, item) -> Cell:
+            if isinstance(item, tuple):
+                return self._items[item[0]][item[1]]
+            elif isinstance(item, self.MatrixPos):
+                return item.get()
+            else:
+                raise KeyError("Key type must be tuple or FieldPos object")
+
+        def __setitem__(self, key, value: Cell):
+            if isinstance(key, tuple):
+                self._items[key[0]][key[1]] = value
+            elif isinstance(key, self.MatrixPos):
+                key.set(value)
+            else:
+                raise KeyError("Key type must be tuple or FieldPos object")
+
+        def row_count(self):
+            return len(self._items)
+
+        def column_count(self):
+            return len(self._items[0])
+
+        def size(self):
+            return self.row_count(), self.column_count()
+
+        def __iter__(self):
+            return iter([self.MatrixPos(self._field, (i, k))
+                         for i in range(self.row_count())
+                         for k in range(self.column_count())])
+
+        def __str__(self):
+            return ", \n".join(["[" + ", ".join(map(str, i)) + "]" for i in self._items])
+
+        def __repr__(self):
+            return str(self)
+
+    def FieldPos(self, r, c):
+        return self.FieldMatrix.MatrixPos(self, (r, c))
 
     def set_view(self, pos):
         log("Replacing my view...", "set_view", "field")
         self.stand(*pos)
 
     def draw_cells(self):
-        for r, row in enumerate(self.mt):
-            for c, item in enumerate(row):
-                item.stand(*self.place((c, r)))
+        for pos in self.mt:
+            pos.get().stand(*self.place(pos.pos()))
+        # for r, row in enumerate(self.mt):
+        #     for c, item in enumerate(row):
+        #         item.stand(*self.place((c, r)))
 
     def place(self, point):
         x, y = self.pos()
-        return x + point[0] * CELL_SIZE, y + point[1] * CELL_SIZE
+        return x + point[1] * CELL_SIZE, y + point[0] * CELL_SIZE
 
     @staticmethod
     def Load(file_name, *groups):
@@ -387,18 +663,23 @@ class Field(GSprite):
         return Field(mt, *groups)
 
 
+FieldPos = Field.FieldMatrix.MatrixPos
+
+
 class Player(GSprite):
     """Класс игрока, как объекта, наделенного способностью красиво (анимированно) ходить по полю"""
-    def __init__(self, field, field_pos, *groups):
+    def __init__(self, field_pos: FieldPos, *groups):
         super(Player, self).__init__(rectf=[0, 0, CELL_SIZE, CELL_SIZE], image=IMG["player"], groups=groups)
-        self.field = field
-        self.field_pos = self.r, self.c = field_pos
+        self.field = field_pos.owner()
+        self.field_pos = field_pos
+        self.hold = None
 
     def change_cell(self, dr, dc):
-        nr = self.r + dr
-        nc = self.c + dc
-        nx, ny = self.field.place((nc, nr))
-        if self.field.mt[nr][nc].params["walkable"]:
+        r, c = self.field_pos.pos()
+        nr = r + dr
+        nc = c + dc
+        nx, ny = self.field.place((nr, nc))
+        if self.field.mt[nr, nc].params["walkable"]:
             act = GAction("PLAYER_WALK".format(str(nr), str(nc)), lambda: None)
             # Создается экземпляр GAction с пустой функцией
             act.action = concat(GSpriteMoveAnimation(self, nx - self.pos()[0], ny - self.pos()[1],
@@ -409,8 +690,25 @@ class Player(GSprite):
             #   2) Сменить фактическое положение персонажа на клетчатом поле
             act.exec()
 
-    def set_field_pos(self, nr, nc):    # Присвоение позиции на поле
-        self.field_pos = self.r, self.c = nr, nc
+    def set_field_pos(self, nr, nc):    # Присвоение позиции на поле, с прожатием сигналов комнат
+        self.field_pos.get().on_leave()
+        self.field_pos.stand(nr, nc)
+        self.field_pos.get().on_stand()
+
+    def release(self):
+        if self.hold is None:
+            raise Exception("Trying to release object while nothing is holding")
+        self.field_pos.get().params["takeables"].append(self.hold)
+        self.hold.field_pos = self.field_pos
+        self.hold.stand(self.field_pos.get().x() + randint(0, self.field_pos.get().w() - self.hold.w()),
+                        self.field_pos.get().y() + randint(0, self.field_pos.get().h() - self.hold.h()))
+
+        me.takeable_group.add(self.hold)
+        me.player_group.remove(self.hold)
+        self.hold = None
+        self.field_pos.get().on_cube_set()
+        if len(self.field_pos.get().params["takeables"]) > 2:
+            log("too many takeables at once", "change_cell", "WARNING")
 
 
 class GMain(GMachine):
@@ -424,6 +722,7 @@ class GMain(GMachine):
         self.all_sprites = pg.sprite.Group()
         self.player_group = pg.sprite.Group()
         self.cell_group = pg.sprite.Group()
+        self.takeable_group = pg.sprite.Group()
 
     def start(self):
         log("Started starting up...", "Start machine", "main")
@@ -439,8 +738,8 @@ class GMain(GMachine):
         self.field.set_view(((self.window_width - CELL_SIZE * self.field.width) // 2,
                              (self.window_height - CELL_SIZE * self.field.height) // 2))
         self.camera = GCamera()
-        self.player = Player(self.field, (5, 2), self.all_sprites)
-        self.player.stand(*self.field.place((self.player.c, self.player.r)))
+        self.player = Player(self.field.FieldPos(5, 2), self.all_sprites, self.player_group)
+        self.player.stand(*self.field.place((self.player.field_pos.r(), self.player.field_pos.c())))
 
         self.clock = pg.time.Clock()
         log("Successfully started up", "Start machine", "main")
@@ -467,8 +766,13 @@ class GMain(GMachine):
                 elif event.key == pg.K_RIGHT:
                     self.player.change_cell(0, 1)
                 elif event.key == pg.K_e:
-                    r, c = self.player.field_pos
-                    self.field.mt[int(r)][int(c)].on_activation()
+                    if self.player.hold is not None:
+                        self.player.release()
+                    elif self.player.field_pos.get().params["takeables"]:
+                        self.player.field_pos.get().params["takeables"][0].take()
+                    elif self.player.hold is None:
+                        r, c = self.player.field_pos.pos()
+                        self.field.mt[int(r), int(c)].on_activation()
 
     def manage_cycle(self):
         self.g_cycle += 1
@@ -484,8 +788,13 @@ class GMain(GMachine):
         self.camera.update(self.player, self.window_size)
         self.camera.apply(self.player)
         self.camera.apply(self.field)
+        for i in self.takeable_group:
+            self.camera.apply(i)
         self.field.draw_cells()
-        self.all_sprites.draw(self.screen)
+        # self.all_sprites.draw(self.screen)
+        self.cell_group.draw(self.screen)
+        self.takeable_group.draw(self.screen)
+        self.player_group.draw(self.screen)
         pg.display.flip()
         self.clock.tick(60)
 
