@@ -13,11 +13,14 @@ from random import randint
 # DAY3:     Make animation_class, start working on a float-pos problem
 # DAY4:     Solve a float-pos problem, add screen motion, make stable build of preview
 # DAY5:     Create a cube.
+# DAY6: ----chilling
+# DAY7:     Make a info cell and exit cell.
+# DAY8:TODO Make levels
 
 
 def perform(func, *args, **kwargs):
     """Вспомогательная функция. При выполнении возвращаемой функции указанные аргументы
-    будут подставлены вместо переданных при вызове. Создана для следующей функции"""
+    будут подставлены вместо переданных при вызове. Создана для следующей функции """
     def f(*_, **__):
         nonlocal func, args, kwargs
         return func(*args, **kwargs)
@@ -59,6 +62,9 @@ def load_data():
     IMG["cube_dispenser"] = load_image("cube_dispenser.png")
     IMG["pressure_button_activated"] = load_image("pressure_button_activated.png")
     IMG["pressure_button_deactivated"] = load_image("pressure_button_deactivated.png")
+    IMG["fizzler"] = load_image("fizzler.png")
+    IMG["info"] = load_image("info.png")
+    IMG["exit"] = load_image("exit.png")
 
 
 IMG = {}            # Словарь, содержащий загруженные изображения
@@ -70,6 +76,11 @@ action_socket = {}  # Хранилище логических ячеек, нуж
 FIELD_SIZE = FIELD_WIDTH, FIELD_HEIGHT = 10, 10
 CELL_SIZE = 50                          # Position = center
 DEFAULT_IMAGE = "default"
+# noinspection PyArgumentList
+COLORS = {
+    "background": pg.Color(1, 5, 14),
+    "foreground": pg.Color(101, 105, 114),
+}
 
 
 # \CONSTS --------------------
@@ -106,6 +117,58 @@ class GMachine(metaclass=abc.ABCMeta):
             self.manage_cycle()
         self.quit()
         return self.exit_code
+
+
+class GPygameMachine(GMachine):
+    def events(self):
+        evs = pg.event.get()
+        for i in evs:
+            if i.type == pg.QUIT:
+                self.exit_code = 1
+        return evs
+
+    @abc.abstractmethod
+    def start(self):
+        pass
+
+    @abc.abstractmethod
+    def quit(self):
+        pass
+
+    @abc.abstractmethod
+    def handle_input(self):
+        pass
+
+    @abc.abstractmethod
+    def manage_cycle(self):
+        pass
+
+
+class GTextPopup(GPygameMachine):
+    def __init__(self, surface: pg.Surface, text="", rect=pg.Rect(100, 100, 800, 600)):
+        self.mes = text
+        self.par = surface
+        self.rect = rect
+
+    def start(self):
+        pg.font.init()
+        self.im = pg.font.SysFont("Consolas", 30)
+        self.surface = pg.Surface(self.rect.size)
+
+    def quit(self):
+        pass
+
+    def handle_input(self):
+        for event in self.events():
+            if event.type == pg.KEYDOWN:
+                self.exit_code = 0
+
+    def manage_cycle(self):
+        pg.draw.rect(self.surface, COLORS["background"], (0, 0, *self.rect.size))
+        pg.draw.rect(self.surface, COLORS["foreground"], (0, 0, *self.rect.size), 10)
+        self.surface.blit(self.im.render(self.mes, False, pg.Color("white")), (10, 10))
+        self.par.blit(self.surface, self.rect.topleft)
+        pg.display.flip()
 
 
 class GSprite(pg.sprite.Sprite):
@@ -292,6 +355,7 @@ class Cell(GSprite):
             "takeables": [],
         }
         self.connect = []
+        self.state = 0
         self.field_pos = None
 
     def setup(self, field_pos):
@@ -328,7 +392,7 @@ class Cell(GSprite):
         pass
 
 
-def GetCell(char: str):
+def GetCell(char: str, *args):
     """Функция перекодировки символа в класс клетки. Используется при чтении и интерпретации файла уровня
     в текстовом виде"""
     return {
@@ -339,6 +403,9 @@ def GetCell(char: str):
         "D": perform(DoorCell, True),
         "C": perform(CubeDispenserCell),
         "_": perform(PressureButtonCell),
+        "F": perform(FizzlerCell),
+        "I": perform(InfoCell),
+        "!": perform(ExitCell)
     }[char]()
 
 
@@ -369,15 +436,15 @@ class DoorCell(Cell):       # Класс клетки двери, которая
         else:
             super(DoorCell, self).__init__(IMG["door_open"])
         self.params["walkable"] = False
-        self.open = False
+        self.state = True
 
     def on_positive_receive(self):
-        self.open = True
+        self.state = False
         self.params["walkable"] = True
         self.image = IMG["door_open"]
 
     def on_negative_receive(self):
-        self.open = False
+        self.state = True
         self.params["walkable"] = False
         self.image = IMG["door_closed"]
 
@@ -411,6 +478,8 @@ class CubeDispenserCell(DispenserCell):
 
     def on_item_death(self):
         self.act.socket_receive()
+        if self.auto_new:
+            self.on_positive_receive()
 
 
 class PressureButtonCell(Cell):
@@ -442,6 +511,45 @@ class PressureButtonCell(Cell):
         else:
             self.image = IMG["pressure_button_deactivated"]
             self.send(False)
+
+
+class FizzlerCell(Cell):
+    def __init__(self):
+        super(FizzlerCell, self).__init__(IMG["fizzler"])
+        self.state = True
+
+    def on_stand(self):
+        if self.state and me.player.hold is not None:
+            me.player.release().die()
+
+    def on_positive_receive(self):
+        self.state = False
+        self.image = IMG["door_open"]
+
+    def on_negative_receive(self):
+        self.state = True
+        self.image = IMG["fizzler"]
+
+
+class InfoCell(Cell):
+    def __init__(self):
+        super(InfoCell, self).__init__(IMG["info"])
+        self.text = ""
+        self.params["activatable"] = True
+
+    def on_activation(self):
+        it = GTextPopup(me.screen, self.text)
+        if it.main() == 1:
+            me.exit_code = 1
+        pass
+
+
+class ExitCell(Cell):
+    def __init__(self):
+        super(ExitCell, self).__init__(IMG["exit"])
+
+    def on_stand(self):
+        me.exit_code = 0
 
 
 class Takeable(GSprite):
@@ -482,6 +590,7 @@ class Takeable(GSprite):
             self.field_pos.get().params["takeables"].remove(self)
             self.image.set_alpha(0)
             self.field_pos = None
+            self.kill()
             self.on_death()
 
     def on_take(self):
@@ -655,10 +764,17 @@ class Field(GSprite):
         inp = open(file_name, "r").read().split("\n\n")
 
         mt = [[GetCell(c) for c in row] for row in inp[0].split("\n")]
-        for con in inp[1].split("\n"):
-            points = [tuple(map(int, i.split(","))) for i in con.split(" ")]
+        inp = inp[1].split("\n")
+        for i in range(1, int(inp[0]) + 1):
+            points = [tuple(map(int, i.split(","))) for i in inp[i].split(" ")]
             for p in range(1, len(points)):
                 mt[points[0][0]][points[0][1]].connect.append(mt[points[p][0]][points[p][1]])
+        for i in range(int(inp[0]) + 1, len(inp)):
+            pos, mes = inp[i].split(" ", 1)
+            r, c = map(int, pos.split(","))
+            assert isinstance(mt[r][c], InfoCell)
+            # noinspection PyUnresolvedReferences
+            mt[r][c].text = mes
 
         return Field(mt, *groups)
 
@@ -695,7 +811,7 @@ class Player(GSprite):
         self.field_pos.stand(nr, nc)
         self.field_pos.get().on_stand()
 
-    def release(self):
+    def release(self) -> Takeable:
         if self.hold is None:
             raise Exception("Trying to release object while nothing is holding")
         self.field_pos.get().params["takeables"].append(self.hold)
@@ -705,13 +821,15 @@ class Player(GSprite):
 
         me.takeable_group.add(self.hold)
         me.player_group.remove(self.hold)
+        _ = self.hold
         self.hold = None
         self.field_pos.get().on_cube_set()
         if len(self.field_pos.get().params["takeables"]) > 2:
             log("too many takeables at once", "change_cell", "WARNING")
+        return _
 
 
-class GMain(GMachine):
+class GMain(GPygameMachine):
     """Класс Main, занимающийся исполнением уровней. Пока игра содержит лишь один уровень
     - вызывается по умолчанию. Содержит очередь функций, счетчик цикла, а также группы спрайтов"""
     def __init__(self, *args):
@@ -750,7 +868,7 @@ class GMain(GMachine):
         log("Successfully quited", "Quit machine", "main")
 
     def handle_input(self):
-        for event in pg.event.get():
+        for event in self.events():
             if event.type == pg.QUIT:
                 log("Exit_button pressed", "Cycle {}".format(str(self.g_cycle)), "main")
                 self.exit_code = 0
@@ -784,7 +902,7 @@ class GMain(GMachine):
             self.queue.pop(0)
 
         # noinspection PyArgumentList
-        pg.draw.rect(self.screen, pg.Color(1, 5, 14), pg.Rect(0, 0, self.window_width, self.window_height))
+        pg.draw.rect(self.screen, COLORS["background"], pg.Rect(0, 0, self.window_width, self.window_height))
         self.camera.update(self.player, self.window_size)
         self.camera.apply(self.player)
         self.camera.apply(self.field)
