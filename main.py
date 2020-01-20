@@ -5,6 +5,7 @@
 import pygame as pg
 import os
 import abc
+import json
 from random import randint
 
 
@@ -68,7 +69,7 @@ def load_data():
 
 
 IMG = {}            # Словарь, содержащий загруженные изображения
-me = None           # Будущий Объект GMain. Хранится для доступа без передачи в качестве аргумента
+level_main = None           # Будущий Объект GMain. Хранится для доступа без передачи в качестве аргумента
 action_socket = {}  # Хранилище логических ячеек, нужен для указания того, может ли GAction выполниться сейчас
 
 
@@ -91,31 +92,43 @@ class GMachine(metaclass=abc.ABCMeta):
     Абстрактный класс игровой машины. Представлен следующей структурой:
         [START] -> ([HANDLE_INPUT] -> [MANAGE_CYCLE]) -> [QUIT].
     От него наследуются состояния игры (запущен уровень/находимся в меню/...)"""
+    def __start(self):
+        self.start()
+
     @abc.abstractmethod
     def start(self):
         pass
+
+    def __quit(self):
+        self.quit()
 
     @abc.abstractmethod
     def quit(self):
         pass
 
+    def __handle_input(self):
+        """Функция, которая обрабатывает действия пользователя и вызывает необходимые функции."""
+        self.handle_input()
+
     @abc.abstractmethod
     def handle_input(self):
-        """Функция, которая обрабатывает действия пользователя и вызывает необходимые функции."""
         pass
+
+    def __manage_cycle(self):
+        """Функция, которая очищает очередь и обновляет графику."""
+        self.manage_cycle()
 
     @abc.abstractmethod
     def manage_cycle(self):
-        """Функция, которая очищает очередь и обновляет графику."""
         pass
     
     def main(self):
-        self.start()
+        self.__start()
         self.exit_code = -1
         while self.exit_code == -1:
-            self.handle_input()
-            self.manage_cycle()
-        self.quit()
+            self.__handle_input()
+            self.__manage_cycle()
+        self.__quit()
         return self.exit_code
 
 
@@ -127,21 +140,47 @@ class GPygameMachine(GMachine):
                 self.exit_code = 1
         return evs
 
+    def __start(self):
+        self.start()
+        self.clock = pg.time.Clock()
+
     @abc.abstractmethod
     def start(self):
         pass
+
+    def __quit(self):
+        self.quit()
 
     @abc.abstractmethod
     def quit(self):
         pass
 
+    def __handle_input(self):
+        self.handle_input()
+
     @abc.abstractmethod
     def handle_input(self):
         pass
 
+    def __manage_cycle(self):
+        self.g_cycle += 1
+        pg.display.flip()
+        self.manage_cycle()
+        self.clock.tick(60)
+
     @abc.abstractmethod
     def manage_cycle(self):
         pass
+
+    def main(self):
+        self.g_cycle = 0
+        self.__start()
+        self.exit_code = -1
+        while self.exit_code == -1:
+            self.__handle_input()
+            self.__manage_cycle()
+        self.__quit()
+        return self.exit_code
 
 
 class GTextPopup(GPygameMachine):
@@ -168,7 +207,6 @@ class GTextPopup(GPygameMachine):
         pg.draw.rect(self.surface, COLORS["foreground"], (0, 0, *self.rect.size), 10)
         self.surface.blit(self.im.render(self.mes, False, pg.Color("white")), (10, 10))
         self.par.blit(self.surface, self.rect.topleft)
-        pg.display.flip()
 
 
 class GSprite(pg.sprite.Sprite):
@@ -281,13 +319,13 @@ class GAnimation(GAction):
         self.time += 1
         self.do()
         if self.time < self.dur:
-            me.queue.append(self.cycle)
+            level_main.queue.append(self.cycle)
         else:
             action_socket[self.socket] = False
             self.on_end()
 
     def start(self):
-        me.queue.append(self.cycle)
+        level_main.queue.append(self.cycle)
 
 
 class GSpriteMoveAnimation(GAnimation):
@@ -359,7 +397,7 @@ class Cell(GSprite):
         self.field_pos = None
 
     def setup(self, field_pos):
-        field_pos: Field.FieldMatrix.MatrixPos
+        field_pos: GLevel.FieldMatrix.MatrixPos
         self.field_pos = field_pos
         self.add(*self.field_pos.owner().mt_groups)
 
@@ -467,7 +505,7 @@ class DispenserCell(Cell):
 
 class CubeDispenserCell(DispenserCell):
     def __init__(self, auto_new_cube=True, auto_first_cube=True):
-        super(CubeDispenserCell, self).__init__(Cube((me.all_sprites, me.takeable_group)),
+        super(CubeDispenserCell, self).__init__(Cube((level_main.all_sprites, level_main.takeable_group)),
                                                 auto_new=auto_new_cube,
                                                 auto_first=auto_first_cube,
                                                 image=IMG["cube_dispenser"])
@@ -519,8 +557,8 @@ class FizzlerCell(Cell):
         self.state = True
 
     def on_stand(self):
-        if self.state and me.player.hold is not None:
-            me.player.release().die()
+        if self.state and level_main.player.hold is not None:
+            level_main.player.release().die()
 
     def on_positive_receive(self):
         self.state = False
@@ -538,9 +576,9 @@ class InfoCell(Cell):
         self.params["activatable"] = True
 
     def on_activation(self):
-        it = GTextPopup(me.screen, self.text)
+        it = GTextPopup(level_main.screen, self.text)
         if it.main() == 1:
-            me.exit_code = 1
+            level_main.exit_code = 1
         pass
 
 
@@ -549,7 +587,7 @@ class ExitCell(Cell):
         super(ExitCell, self).__init__(IMG["exit"])
 
     def on_stand(self):
-        me.exit_code = 0
+        level_main.exit_code = 0
 
 
 class Takeable(GSprite):
@@ -560,7 +598,7 @@ class Takeable(GSprite):
 
     def create(self, field_pos):
         assert isinstance(field_pos, FieldPos)
-        self.add(me.takeable_group)
+        self.add(level_main.takeable_group)
         self.field_pos = field_pos
         self.stand(self.field_pos.get().x() + randint(0, self.field_pos.get().w() - self.w()),
                    self.field_pos.get().y() + randint(0, self.field_pos.get().h() - self.h()))
@@ -572,19 +610,19 @@ class Takeable(GSprite):
         return Takeable(self.image, self.groups())
 
     def take(self):
-        global me
-        if me.player.hold is not None:
+        global level_main
+        if level_main.player.hold is not None:
             raise Exception("Trying to take a Takeable while holding another Takeable")
-        me.player.hold = self
+        level_main.player.hold = self
         self.field_pos.get().params["takeables"].remove(self)
-        me.player.centrify(self)
-        me.takeable_group.remove(self)
-        me.player_group.add(self)
+        level_main.player.centrify(self)
+        level_main.takeable_group.remove(self)
+        level_main.player_group.add(self)
         self.field_pos.get().on_cube_take()
         self.on_take()
 
     def die(self):
-        if me.player.hold == self:
+        if level_main.player.hold == self:
             raise Exception("Trying to kill Takeable while player holding it")
         else:
             self.field_pos.get().params["takeables"].remove(self)
@@ -617,12 +655,14 @@ class Cube(Takeable):
         super(Cube, self).__init__(IMG["cube"], groups=groups)
 
 
-class Field(GSprite):
-    """Класс игрвого клетчатого поля. Реализует расстановку клеток, также вычислению
+class GLevel(GSprite):
+    """Класс игрвого клетчатого поля и уровня. Реализует расстановку клеток, также вычислению
     абсолютной позиции предмета в клетке, также генерацию уровня из текстового файла
     """
-    def __init__(self, matrix=None, groups=()):
-        super(Field, self).__init__(rectf=None, image=None, groups=groups)
+    def __init__(self, level_name, start_pos, matrix=None, groups=()):
+        super(GLevel, self).__init__(rectf=None, image=None, groups=groups)
+        self.name = level_name
+        self.start_pos = start_pos
         self.mt_groups = groups
         if matrix is None:
             log("Init without matrix", "__init__", "field")
@@ -652,7 +692,7 @@ class Field(GSprite):
 
         class MatrixPos:
             def __init__(self, field, *p):
-                assert isinstance(field, Field)
+                assert isinstance(field, GLevel)
                 self._field = field
                 self._mt = field.mt
                 try:
@@ -758,28 +798,47 @@ class Field(GSprite):
         return x + point[1] * CELL_SIZE, y + point[0] * CELL_SIZE
 
     @staticmethod
-    def Load(file_name, *groups):
+    def Load(path_to_folder, *groups):
         """Интерпретирует текстовый вид уровня в сам уровень с помощью имеющегося синтаксиса
         TODO документация по синтаксису"""
-        inp = open(file_name, "r").read().split("\n\n")
+        map_file = os.path.join(path_to_folder, "map.txt")
+        meta_file = os.path.join(path_to_folder, "meta.json")
+        with open(map_file, "r") as fmap, open(meta_file, "r") as fmeta:
+            data_map = fmap.read().split("\n")
+            meta_data = json.loads(fmeta.read())
+            name = meta_data["name"]
+            st_pos = map(int, meta_data["start_pos"].split(","))
+            mt = [[GetCell(c) for c in row] for row in data_map]
+            for start, end in meta_data["connections"].items():
+                start = list(map(int, start.split(",")))
+                end = [tuple(map(int, i.split(","))) for i in end]
+                for p in end:
+                    mt[start[0]][start[1]].connect.append(mt[p[0]][p[1]])
+            for p, mes in meta_data["info_text"].items():
+                p = list(map(int, p.split(",")))
+                assert isinstance(mt[p[0]][p[1]], InfoCell)
+                mt[p[0]][p[1]].text = mes
 
-        mt = [[GetCell(c) for c in row] for row in inp[0].split("\n")]
-        inp = inp[1].split("\n")
-        for i in range(1, int(inp[0]) + 1):
-            points = [tuple(map(int, i.split(","))) for i in inp[i].split(" ")]
-            for p in range(1, len(points)):
-                mt[points[0][0]][points[0][1]].connect.append(mt[points[p][0]][points[p][1]])
-        for i in range(int(inp[0]) + 1, len(inp)):
-            pos, mes = inp[i].split(" ", 1)
-            r, c = map(int, pos.split(","))
-            assert isinstance(mt[r][c], InfoCell)
-            # noinspection PyUnresolvedReferences
-            mt[r][c].text = mes
+        return GLevel(name, st_pos, mt, *groups)
+        # inp = open(file_name, "r").read().split("\n\n")
+        #
+        #
+        # inp = inp[1].split("\n")
+        # for i in range(1, int(inp[0]) + 1):
+        #     points = [tuple(map(int, i.split(","))) for i in inp[i].split(" ")]
+        #     for p in range(1, len(points)):
+        #         mt[points[0][0]][points[0][1]].connect.append(mt[points[p][0]][points[p][1]])
+        # for i in range(int(inp[0]) + 1, len(inp)):
+        #     pos, mes = inp[i].split(" ", 1)
+        #     r, c = map(int, pos.split(","))
+        #     assert isinstance(mt[r][c], InfoCell)
+        #     # noinspection PyUnresolvedReferences
+        #     mt[r][c].text = mes
+        #
+        # return GLevel(mt, *groups)
 
-        return Field(mt, *groups)
 
-
-FieldPos = Field.FieldMatrix.MatrixPos
+FieldPos = GLevel.FieldMatrix.MatrixPos
 
 
 class Player(GSprite):
@@ -819,8 +878,8 @@ class Player(GSprite):
         self.hold.stand(self.field_pos.get().x() + randint(0, self.field_pos.get().w() - self.hold.w()),
                         self.field_pos.get().y() + randint(0, self.field_pos.get().h() - self.hold.h()))
 
-        me.takeable_group.add(self.hold)
-        me.player_group.remove(self.hold)
+        level_main.takeable_group.add(self.hold)
+        level_main.player_group.remove(self.hold)
         _ = self.hold
         self.hold = None
         self.field_pos.get().on_cube_set()
@@ -829,12 +888,12 @@ class Player(GSprite):
         return _
 
 
-class GMain(GPygameMachine):
+class GLevelExec(GPygameMachine):
     """Класс Main, занимающийся исполнением уровней. Пока игра содержит лишь один уровень
     - вызывается по умолчанию. Содержит очередь функций, счетчик цикла, а также группы спрайтов"""
-    def __init__(self, *args):
+    def __init__(self, level_folder, *args):
+        self.file = level_folder
         self.exit_code = 1
-        self.g_cycle = 0
         self.args = args
         self.queue = []
         self.all_sprites = pg.sprite.Group()
@@ -844,34 +903,28 @@ class GMain(GPygameMachine):
 
     def start(self):
         log("Started starting up...", "Start machine", "main")
-        pg.init()
         self.window_size = self.window_width, self.window_height = 1280, 720
 
         # self.screen = pg.display.set_mode(self.window_size, pg.FULLSCREEN)
         self.screen = pg.display.set_mode(self.window_size)
-        load_data()
 
-        self.field = Field.Load(r"C:\Olymp\yandee\PROJECT_BOX\Trial\data\testlevel.txt",
-                                (self.all_sprites, self.cell_group))
+        self.field = GLevel.Load(self.file,
+                                 (self.all_sprites, self.cell_group))
         self.field.set_view(((self.window_width - CELL_SIZE * self.field.width) // 2,
                              (self.window_height - CELL_SIZE * self.field.height) // 2))
         self.camera = GCamera()
-        self.player = Player(self.field.FieldPos(5, 2), self.all_sprites, self.player_group)
+        self.player = Player(self.field.FieldPos(*self.field.start_pos), self.all_sprites, self.player_group)
         self.player.stand(*self.field.place((self.player.field_pos.r(), self.player.field_pos.c())))
 
-        self.clock = pg.time.Clock()
         log("Successfully started up", "Start machine", "main")
 
     def quit(self):
         log("Started quiting...", "Quit machine", "main")
-        pg.quit()
+        # pg.quit()
         log("Successfully quited", "Quit machine", "main")
 
     def handle_input(self):
         for event in self.events():
-            if event.type == pg.QUIT:
-                log("Exit_button pressed", "Cycle {}".format(str(self.g_cycle)), "main")
-                self.exit_code = 0
             if event.type == pg.MOUSEBUTTONDOWN:
                 log(event)
             if event.type == pg.KEYDOWN:
@@ -893,8 +946,6 @@ class GMain(GPygameMachine):
                         self.field.mt[int(r), int(c)].on_activation()
 
     def manage_cycle(self):
-        self.g_cycle += 1
-
         _ = self.queue.copy()
         while len(_) > 0:
             # print(_)
@@ -913,8 +964,6 @@ class GMain(GPygameMachine):
         self.cell_group.draw(self.screen)
         self.takeable_group.draw(self.screen)
         self.player_group.draw(self.screen)
-        pg.display.flip()
-        self.clock.tick(60)
 
 
 def log(mes, sender=None, father=None, say=print):
@@ -928,10 +977,73 @@ def log(mes, sender=None, father=None, say=print):
     say(mes)
 
 
+class GMain(GPygameMachine):
+    def __init__(self, *args):
+        self.args = args
+
+    class StartAnimation(GPygameMachine):
+        def __init__(self, surface: pg.Surface):
+            self.surface = surface
+            self.tr = 0
+
+        def start(self):
+            pg.font.init()
+            self.surface.set_alpha(0)
+            self.im = pg.font.SysFont("Comic Sans MS", 60)
+
+        def quit(self):
+            pass
+
+        def handle_input(self):
+            for event in self.events():
+                if event.type == pg.KEYDOWN and event.key == pg.K_s:
+                    self.exit_code = 1
+
+        def manage_cycle(self):
+            pg.draw.rect(self.surface, pg.Color("black"), self.surface.get_rect())
+            self.surface.blit(self.im.render("This game was made by", False,
+                                             (255 / 100 * self.tr,
+                                              255 / 100 * self.tr,
+                                              255 / 100 * self.tr)), (10, 100))
+            self.surface.blit(self.im.render("Ilya Latypov (gang)", False,
+                                             (255 / 100 * self.tr,
+                                              255 / 100 * self.tr,
+                                              255 / 100 * self.tr)), (10, 160))
+            if self.g_cycle <= 100:
+                self.tr = self.g_cycle
+            elif 300 >= self.g_cycle >= 200:
+                self.tr = 300 - self.g_cycle
+            if self.g_cycle == 330:
+                self.exit_code = 0
+
+    def start(self):
+        pg.init()
+        self.screen_size = self.screen_width, self.screen_height = 800, 600
+        self.screen = pg.display.set_mode(self.screen_size)
+        self.start_animation = self.StartAnimation(self.screen)
+        self.act = GAction("START_ANIMATION", self.start_animation.main)
+        self.act.exec()
+        load_data()
+
+    def handle_input(self):
+        for event in self.events():
+            if event.type == pg.QUIT:
+                self.exit_code = 0
+
+    def manage_cycle(self):
+        global level_main
+        pg.draw.rect(self.screen, COLORS["background"], self.screen.get_rect())
+
+    def quit(self):
+        pg.quit()
+        pg.font.quit()
+
+
 def main(*args):
-    global me
-    me = GMain(*args)
-    return me.main()
+    global level_main
+    m = GMain(*args)
+    # me = GLevelExec("data/testlevel.txt", *args)
+    return m.main()
 
 
 if __name__ == "__main__":
