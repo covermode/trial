@@ -52,6 +52,7 @@ def load_image(name, chr_key=None) -> pg.Surface:
 def load_data():
     """Загрузка всех файлов игры"""
     global IMG
+    IMG["logo"] = load_image("logo.png", -1)
     IMG["empty"] = load_image("empty.png")
     IMG["wall"] = load_image("wall.png")
     IMG["player"] = load_image("player.png", -1)
@@ -141,6 +142,7 @@ class GPygameMachine(GMachine):
         return evs
 
     def __start(self):
+        self.queue = []
         self.start()
         self.clock = pg.time.Clock()
 
@@ -163,6 +165,12 @@ class GPygameMachine(GMachine):
         pass
 
     def __manage_cycle(self):
+        _ = self.queue.copy()
+        while len(_) > 0:
+            # print(_)
+            _.pop(0)()
+            self.queue.pop(0)
+
         self.g_cycle += 1
         pg.display.flip()
         self.manage_cycle()
@@ -184,8 +192,13 @@ class GPygameMachine(GMachine):
 
 
 class GTextPopup(GPygameMachine):
-    def __init__(self, surface: pg.Surface, text="", rect=pg.Rect(100, 100, 800, 600)):
-        self.mes = text
+    def __init__(self, surface: pg.Surface, text="", rect=pg.Rect(100, 100, 600, 400)):
+        self.mes = []
+        p = text[:35]
+        while p:
+            self.mes.append(p)
+            text = text[35:]
+            p = text[:35]
         self.par = surface
         self.rect = rect
 
@@ -205,7 +218,8 @@ class GTextPopup(GPygameMachine):
     def manage_cycle(self):
         pg.draw.rect(self.surface, COLORS["background"], (0, 0, *self.rect.size))
         pg.draw.rect(self.surface, COLORS["foreground"], (0, 0, *self.rect.size), 10)
-        self.surface.blit(self.im.render(self.mes, False, pg.Color("white")), (10, 10))
+        for i in range(len(self.mes)):
+            self.surface.blit(self.im.render(self.mes[i], False, pg.Color("white")), (10, 10 + 30 * i))
         self.par.blit(self.surface, self.rect.topleft)
 
 
@@ -217,7 +231,8 @@ class GSprite(pg.sprite.Sprite):
         self.image = image if image is not None else IMG[DEFAULT_IMAGE]
         self.ident = str(randint(100, 100000000000))
         if rectf is None:
-            self.rectf = self.image.get_rect()
+            self.rect = self.image.get_rect()
+            self.rectf = [self.rect.x, self.rect.y, self.rect.w, self.rect.h]
         else:
             pg.transform.scale(self.image, rectf[2:4])
             self.rectf = rectf
@@ -278,6 +293,21 @@ class GSprite(pg.sprite.Sprite):
                             int(self.rectf[3]))
 
 
+class TextButton(GSprite):
+    def __init__(self, action, rect=None, text="", *groups):
+        super(TextButton, self).__init__(rect, None, groups)
+        self.selected = False
+        self.text = text
+        self.act = action
+        self.fnt = pg.font.SysFont("Arial", 20)
+
+    def draw(self, surface: pg.Surface):
+        th = self.fnt.render(self.text, False, pg.Color("white"))
+        me = GSprite(image=th)
+        self.centrify(me)
+        pg.sprite.Group(me).draw(surface)
+
+
 class GAction:
     """Класс запрограммированного действия. В зависимости от значения в action_socket
     может выполниться или нет. Если выполнился, то без изменения значения в ячейке более не запустится."""
@@ -291,7 +321,7 @@ class GAction:
     def __call__(self, *args, **kwargs):
         if not action_socket[self.socket]:
             action_socket[self.socket] = True
-            self.action(*args, **kwargs)
+            return self.action(*args, **kwargs)
 
     def socket_receive(self):
         action_socket[self.socket] = False
@@ -587,7 +617,7 @@ class ExitCell(Cell):
         super(ExitCell, self).__init__(IMG["exit"])
 
     def on_stand(self):
-        level_main.exit_code = 0
+        level_main.exit_code = -1000    # that means you won
 
 
 class Takeable(GSprite):
@@ -891,28 +921,80 @@ class Player(GSprite):
 class GLevelExec(GPygameMachine):
     """Класс Main, занимающийся исполнением уровней. Пока игра содержит лишь один уровень
     - вызывается по умолчанию. Содержит очередь функций, счетчик цикла, а также группы спрайтов"""
-    def __init__(self, level_folder, *args):
+    def __init__(self, screen, level_folder, *args):
         self.file = level_folder
-        self.exit_code = 1
+        self.screen = screen
         self.args = args
+
+    class Pause(GPygameMachine):
+        def __init__(self, screen: pg.Surface):
+            self.screen = screen
+
+        def start(self):
+            self.bg = pg.display.get_surface().copy()
+            # self.bg.set_alpha(12)
+            it = pg.Surface(self.screen.get_size(), flags=pg.SRCALPHA)
+            it.fill((0, 0, 0, 192))
+            self.bg.blit(it, (0, 0))
+
+            self.txt = TextButton(lambda: None, (350, 100, 100, 60), "Пауза")
+            self.bns = [
+                TextButton(self.continue_, [300, 300, 200, 40], "Продолжить"),
+                TextButton(self.retry_, [300, 350, 200, 40], "Перезапуск"),
+                TextButton(self.exit_, [300, 400, 200, 40], "Выйти"),
+            ]
+            self.sel = 0
+
+        def continue_(self):
+            self.exit_code = 0
+
+        def retry_(self):
+            self.exit_code = 1000
+
+        def exit_(self):
+            self.exit_code = -2000
+
+        def quit(self):
+            pass
+
+        def handle_input(self):
+            for event in self.events():
+                if event.type == pg.KEYDOWN:
+                    if event.key == pg.K_ESCAPE:
+                        self.continue_()
+                    elif event.key == pg.K_UP and self.sel > 0:
+                        self.sel -= 1
+                    elif event.key == pg.K_DOWN and self.sel < len(self.bns) - 1:
+                        self.sel += 1
+                    elif event.key == pg.K_RETURN:
+                        self.bns[self.sel].act()
+
+        def manage_cycle(self):
+            self.screen.blit(self.bg, (0, 0))
+            self.txt.draw(self.screen)
+            for i in self.bns:
+                i.draw(self.screen)
+            pg.draw.rect(self.screen, COLORS["foreground"], self.bns[self.sel].rect, 1)
+
+    def start(self):
+        log("Started starting up...", "Start machine", "main")
+        self.exit_code = 0
         self.queue = []
         self.all_sprites = pg.sprite.Group()
         self.player_group = pg.sprite.Group()
         self.cell_group = pg.sprite.Group()
         self.takeable_group = pg.sprite.Group()
 
-    def start(self):
-        log("Started starting up...", "Start machine", "main")
-        self.window_size = self.window_width, self.window_height = 1280, 720
+        self.window_size = self.window_width, self.window_height = self.screen.get_rect().size
 
         # self.screen = pg.display.set_mode(self.window_size, pg.FULLSCREEN)
-        self.screen = pg.display.set_mode(self.window_size)
 
         self.field = GLevel.Load(self.file,
                                  (self.all_sprites, self.cell_group))
         self.field.set_view(((self.window_width - CELL_SIZE * self.field.width) // 2,
                              (self.window_height - CELL_SIZE * self.field.height) // 2))
         self.camera = GCamera()
+        self.on_screen = pg.sprite.Group()
         self.player = Player(self.field.FieldPos(*self.field.start_pos), self.all_sprites, self.player_group)
         self.player.stand(*self.field.place((self.player.field_pos.r(), self.player.field_pos.c())))
 
@@ -944,13 +1026,13 @@ class GLevelExec(GPygameMachine):
                     elif self.player.hold is None:
                         r, c = self.player.field_pos.pos()
                         self.field.mt[int(r), int(c)].on_activation()
+                elif event.key == pg.K_ESCAPE:
+                    it = self.Pause(self.screen)
+                    ex = it.main()
+                    if ex != 0:
+                        self.exit_code = ex
 
     def manage_cycle(self):
-        _ = self.queue.copy()
-        while len(_) > 0:
-            # print(_)
-            _.pop(0)()
-            self.queue.pop(0)
 
         # noinspection PyArgumentList
         pg.draw.rect(self.screen, COLORS["background"], pg.Rect(0, 0, self.window_width, self.window_height))
@@ -980,6 +1062,7 @@ def log(mes, sender=None, father=None, say=print):
 class GMain(GPygameMachine):
     def __init__(self, *args):
         self.args = args
+        self.lvl = 0
 
     class StartAnimation(GPygameMachine):
         def __init__(self, surface: pg.Surface):
@@ -1001,11 +1084,11 @@ class GMain(GPygameMachine):
 
         def manage_cycle(self):
             pg.draw.rect(self.surface, pg.Color("black"), self.surface.get_rect())
-            self.surface.blit(self.im.render("This game was made by", False,
+            self.surface.blit(self.im.render("This game was made", False,
                                              (255 / 100 * self.tr,
                                               255 / 100 * self.tr,
                                               255 / 100 * self.tr)), (10, 100))
-            self.surface.blit(self.im.render("Ilya Latypov (gang)", False,
+            self.surface.blit(self.im.render("by Ilya Latypov (gang)", False,
                                              (255 / 100 * self.tr,
                                               255 / 100 * self.tr,
                                               255 / 100 * self.tr)), (10, 160))
@@ -1016,23 +1099,83 @@ class GMain(GPygameMachine):
             if self.g_cycle == 330:
                 self.exit_code = 0
 
+    def bn_continue(self):
+        self.exec_level()
+
+    def bn_new(self):
+        self.lvl = 0
+        self.exec_level()
+
+    def exec_level(self):
+        global level_main
+        level_main = self.lvls[self.lvl]
+        ex = level_main.main()
+        if ex == 1:
+            self.exit_code = 1
+        elif ex == -1000:
+            if self.lvl < len(self.lvls) - 1:
+                self.lvl += 1
+                self.exec_level()
+            else:
+                self.won()
+        elif ex == 1000:
+            self.exec_level()
+
+    def won(self):
+        th = GTextPopup(self.screen, "CONGRATULATIONS!!!!GG!!!")
+        th.main()
+        self.exit_code = 0
+
+    def bn_exit(self):
+        self.exit_code = 0
+
     def start(self):
         pg.init()
+        pg.mouse.set_visible(False)
         self.screen_size = self.screen_width, self.screen_height = 800, 600
         self.screen = pg.display.set_mode(self.screen_size)
+        self.lvls = [
+            GLevelExec(self.screen, os.path.join("data", "lvls", "1"))
+        ]
+        load_data()
         self.start_animation = self.StartAnimation(self.screen)
         self.act = GAction("START_ANIMATION", self.start_animation.main)
-        self.act.exec()
-        load_data()
+        self.logo = GSprite(image=IMG["logo"])
+        self.logo.stand(50, 50)
+        self.on_screen = pg.sprite.Group(self.logo)
+        self.bns = [
+            TextButton(self.bn_continue, [10, 300, 780, 40], "Продолжить"),
+            TextButton(self.bn_new, [10, 350, 780, 40], "Новая игра"),
+            TextButton(self.bn_exit, [10, 400, 780, 40], "Выход")
+        ]
+        self.sel = 0
+
+        def anim_start():
+            nonlocal self
+            if self.act.exec() == 1:
+                self.exit_code = 1
+
+        # self.queue.append(anim_start)
 
     def handle_input(self):
         for event in self.events():
             if event.type == pg.QUIT:
                 self.exit_code = 0
+            if event.type == pg.KEYDOWN:
+                if event.key == pg.K_UP and self.sel > 0:
+                    self.sel -= 1
+                elif event.key == pg.K_DOWN and self.sel < len(self.bns) - 1:
+                    self.sel += 1
+                elif event.key == pg.K_RETURN:
+                    self.bns[self.sel].act()
 
     def manage_cycle(self):
         global level_main
         pg.draw.rect(self.screen, COLORS["background"], self.screen.get_rect())
+        for b in self.bns:
+            b.draw(self.screen)
+        self.on_screen.draw(self.screen)
+        pg.draw.rect(self.screen, COLORS["foreground"], self.bns[self.sel].rect, 1)
 
     def quit(self):
         pg.quit()
