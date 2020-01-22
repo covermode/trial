@@ -19,6 +19,7 @@ from random import randint
 # DAY6: ----chilling
 # DAY7:     Make a info cell and exit cell.
 # DAY8:     Make levels
+# DAY9:     Allow animation
 
 
 def perform(func, *args, **kwargs):
@@ -616,13 +617,16 @@ class CubeDispenserCell(DispenserCell):     # Раздатчик кубика. �
                                                 auto_new=auto_new_cube,
                                                 auto_first=auto_first_cube,
                                                 image=IMG["cube_dispenser"])
-        self.act = GAction("CUBE_DISPENSER_{}".format(self.ident), self.create_new)
 
     def on_positive(self):
-        self.act.exec()
+        if self.item.alive():
+            self.item.die()
+        self.item.create(self.field_pos)
+
+    def on_negative(self):
+        self.on_positive()
 
     def on_item_death(self):
-        self.act.socket_receive()
         if self.auto_new:
             self.on_positive()
 
@@ -749,6 +753,7 @@ class Takeable(GSprite):
         else:
             self.field_pos.get().params["takeables"].remove(self)
             self.image.set_alpha(0)
+            self.field_pos.get().on_cube_take()
             self.field_pos = None
             self.kill()
             self.on_death()
@@ -849,6 +854,9 @@ class GLevel(GSprite):
 
             def pos(self):
                 return self._r, self._c
+
+            def copy(self):
+                return self.__class__(self._field, self.pos())
 
             def r(self):
                 return self._r
@@ -982,7 +990,7 @@ class Player(GSprite):
         if self.hold is None:
             raise Exception("Trying to release object while nothing is holding")
         self.field_pos.get().params["takeables"].append(self.hold)
-        self.hold.field_pos = self.field_pos
+        self.hold.field_pos = self.field_pos.copy()
         self.hold.stand(self.field_pos.get().x() + randint(0, self.field_pos.get().w() - self.hold.w()),
                         self.field_pos.get().y() + randint(0, self.field_pos.get().h() - self.hold.h()))
 
@@ -1157,6 +1165,7 @@ class GMain(GPygameMachine):
         elif ex == -1000:
             if self.lvl < len(self.lvls) - 1:
                 self.lvl += 1
+                self.save()
                 self.exec_level()
             else:
                 self.won()
@@ -1187,6 +1196,8 @@ class GMain(GPygameMachine):
         self.lvls = [
             GLevelExec(self.screen, os.path.join("data", "lvls", "1")),
             GLevelExec(self.screen, os.path.join("data", "lvls", "2")),
+            GLevelExec(self.screen, os.path.join("data", "lvls", "3")),
+            GLevelExec(self.screen, os.path.join("data", "lvls", "4")),
         ]
         load_data()
         self.start_animation = GBrutalTextAnimation(self.screen,
@@ -1214,7 +1225,7 @@ class GMain(GPygameMachine):
             if self.act.exec() == 1:
                 self.exit_code = 1
 
-        # self.queue.append(anim_start)
+        self.queue.append(anim_start)
 
     def handle_input(self):
         for event in pg.event.get():
@@ -1236,11 +1247,14 @@ class GMain(GPygameMachine):
         self.on_screen.draw(self.screen)
         pg.draw.rect(self.screen, COLORS["foreground"], self.bns[self.sel].rect, 1)
 
+    def save(self):
+        with open(os.path.join("user_files", "save_file.ini"), "w") as f:
+            f.write(str(self.lvl))
+
     def quit(self):
         pg.quit()
         pg.font.quit()
-        with open(os.path.join("user_files", "save_file.ini"), "w") as f:
-            f.write(str(self.lvl))
+        self.save()
 
 
 def log(mes, sender=None, father=None, say=print):
