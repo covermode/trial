@@ -468,7 +468,7 @@ class Cell(GSprite):
     """Класс клетки клетчатого поля. Является в некотором роде абстрактным и
     явно использоваться не должен. Имеет словарь свойств (используются игрой) и
     массив connect. Он используется для коммуникации м-у клетками. Для отправки сигнала
-    всем клеткам используется send(), при получении вызывается receive(). Остальные
+    всем клеткам используется send(), при получении вызывается check_activators(). Остальные
     функции вызываются игрой"""
     def __init__(self, image=None):
         super(Cell, self).__init__(image=image)
@@ -478,7 +478,8 @@ class Cell(GSprite):
             "takeables": [],
         }
         self.connect = []
-        self.state = 0
+        self.activators = []
+        self.state = False
         self.field_pos = None
 
     def setup(self, field_pos):
@@ -487,13 +488,15 @@ class Cell(GSprite):
         self.field_pos = field_pos
         self.add(*self.field_pos.owner().mt_groups)
 
-    def send(self, positive=True):
-        """Функция отправки сигнала. Тип посылаемого сигнала зависит от переданного в аргументе"""
+    def check_activators(self):
+        if all(map(lambda c: c.state, self.activators)):
+            self.on_positive()
+        else:
+            self.on_negative()
+
+    def send(self):
         for c in self.connect:
-            if positive:
-                c.on_positive_receive()
-            else:
-                c.on_negative_receive()
+            c.check_activators()
 
     def on_stand(self):
         """Событие. Когда игрок встает на клетку"""
@@ -515,11 +518,11 @@ class Cell(GSprite):
         """Событие. Когда игрок нажал "Е", находясь на клетке"""
         pass
 
-    def on_positive_receive(self):
+    def on_positive(self):
         """Получение сигнала +"""
         pass
 
-    def on_negative_receive(self):
+    def on_negative(self):
         """Получение сигнала -"""
         pass
 
@@ -535,7 +538,8 @@ def GetCell(char: str, *args):
         "D": perform(DoorCell, True),
         "C": perform(CubeDispenserCell),
         "_": perform(PressureButtonCell),
-        "F": perform(FizzlerCell),
+        "F": perform(FizzlerCell, True),
+        "f": perform(FizzlerCell, False),
         "I": perform(InfoCell),
         "!": perform(ExitCell)
     }[char]()
@@ -558,27 +562,34 @@ class EButtonCell(Cell):    # Класс клетки, встав на кото�
         self.params["activatable"] = True
 
     def on_activation(self):
-        self.send(True)
+        self.state = not self.state
+        self.send()
 
 
 class DoorCell(Cell):       # Класс клетки двери, которая меняет свое состояние при получении сигнала
     def __init__(self, closed=True):
+        self.default = closed
         if closed:
             super(DoorCell, self).__init__(IMG["door_closed"])
         else:
             super(DoorCell, self).__init__(IMG["door_open"])
-        self.params["walkable"] = False
-        self.state = True
+        self.params["walkable"] = not self.default
 
-    def on_positive_receive(self):
-        self.state = False
-        self.params["walkable"] = True
-        self.image = IMG["door_open"]
+    def on_positive(self):
+        self.state = not self.default
+        self.params["walkable"] = not self.state
+        if self.state:
+            self.image = IMG["door_closed"]
+        else:
+            self.image = IMG["door_open"]
 
-    def on_negative_receive(self):
-        self.state = True
-        self.params["walkable"] = False
-        self.image = IMG["door_closed"]
+    def on_negative(self):
+        self.state = self.default
+        self.params["walkable"] = not self.state
+        if self.state:
+            self.image = IMG["door_closed"]
+        else:
+            self.image = IMG["door_open"]
 
 
 class DispenserCell(Cell):          # Класс клетки раздатчика. Абстрактен сам по себе
@@ -607,13 +618,13 @@ class CubeDispenserCell(DispenserCell):     # Раздатчик кубика. �
                                                 image=IMG["cube_dispenser"])
         self.act = GAction("CUBE_DISPENSER_{}".format(self.ident), self.create_new)
 
-    def on_positive_receive(self):
+    def on_positive(self):
         self.act.exec()
 
     def on_item_death(self):
         self.act.socket_receive()
         if self.auto_new:
-            self.on_positive_receive()
+            self.on_positive()
 
 
 class PressureButtonCell(Cell):     # Нажимная клетка. Посылает + если на ней стоит игрок или предмет
@@ -641,28 +652,35 @@ class PressureButtonCell(Cell):     # Нажимная клетка. Посыл�
     def check(self):        # Проверка того, лежит ли что-нибудь на клетке
         if self.standing or self.takeable_lying:
             self.image = IMG["pressure_button_activated"]
-            self.send(True)
+            self.state = True
         else:
             self.image = IMG["pressure_button_deactivated"]
-            self.send(False)
+            self.state = False
+        self.send()
 
 
 class FizzlerCell(Cell):    # Рассеиватель. Если предмет "попадает" на клетку, то он уничтожается.
-    def __init__(self):
+    def __init__(self, active=True):
         super(FizzlerCell, self).__init__(IMG["fizzler"])
-        self.state = True
+        self.state = self.default = active
 
     def on_stand(self):
         if self.state and level_main.player.hold is not None:
             level_main.player.release().die()
 
-    def on_positive_receive(self):
-        self.state = False
-        self.image = IMG["door_open"]
+    def on_positive(self):
+        self.state = not self.default
+        if self.state:
+            self.image = IMG["fizzler"]
+        else:
+            self.image = IMG["door_open"]
 
-    def on_negative_receive(self):
-        self.state = True
-        self.image = IMG["fizzler"]
+    def on_negative(self):
+        self.state = self.default
+        if self.state:
+            self.image = IMG["fizzler"]
+        else:
+            self.image = IMG["door_open"]
 
 
 class InfoCell(Cell):       # Информационная клетка. Содержит всякий текст
@@ -684,6 +702,8 @@ class ExitCell(Cell):       # Когда на клетку наступает и
 
     def on_stand(self):
         level_main.exit_code = -1000    # that means you won
+        if "PLAYER_WALK" in action_socket:
+            action_socket["PLAYER_WALK"] = False
 
 
 class Takeable(GSprite):
@@ -739,14 +759,6 @@ class Takeable(GSprite):
 
     def on_release(self):
         """Событие. При опускании предмета"""
-        pass
-
-    def on_positive_receive(self):
-        """Событие. Не используется"""
-        pass
-
-    def on_negative_receive(self):
-        """Событие. Не используется"""
         pass
 
     def on_death(self):
@@ -916,7 +928,7 @@ class GLevel(GSprite):
         meta_file = os.path.join(path_to_folder, "meta.json")
         with open(map_file, "r") as fmap, open(meta_file, "r") as fmeta:
             data_map = fmap.read().split("\n")
-            meta_data = json.loads(fmeta.read())
+            meta_data = json.loads(fmeta.read(), encoding="UTF-16")
             name = meta_data["name"]
             st_pos = map(int, meta_data["start_pos"].split(","))
             mt = [[GetCell(c) for c in row] for row in data_map]
@@ -925,6 +937,7 @@ class GLevel(GSprite):
                 end = [tuple(map(int, i.split(","))) for i in end]
                 for p in end:
                     mt[start[0]][start[1]].connect.append(mt[p[0]][p[1]])
+                    mt[p[0]][p[1]].activators.append(mt[start[0]][start[1]])
             for p, mes in meta_data["info_text"].items():
                 p = list(map(int, p.split(",")))
                 assert isinstance(mt[p[0]][p[1]], InfoCell)
@@ -998,7 +1011,7 @@ class GLevelExec(GPygameMachine):
 
         def start(self):
             self.bg = pg.display.get_surface().copy()
-            # self.bg.set_alpha(12)
+            self.bg.set_alpha(128)
             it = pg.Surface(self.screen.get_size(), flags=pg.SRCALPHA)
             it.fill((0, 0, 0, 192))
             self.bg.blit(it, (0, 0))
@@ -1126,11 +1139,19 @@ class GMain(GPygameMachine):
         self.lvl = 0
         self.exec_level()
 
+    def bn_demo(self):
+        self.lvl = 0
+        self.lvls = [
+            GLevelExec(self.screen, os.path.join("data", "lvls", "demo"))
+        ]
+        self.exec_level()
+
     def exec_level(self):
         """Запуск уровня."""
         global level_main
         level_main = self.lvls[self.lvl]
         ex = level_main.main()
+        level_main = None
         if ex == 1:
             self.exit_code = 1
         elif ex == -1000:
@@ -1164,7 +1185,8 @@ class GMain(GPygameMachine):
         self.screen_size = self.screen_width, self.screen_height = 800, 600
         self.screen = pg.display.set_mode(self.screen_size)
         self.lvls = [
-            GLevelExec(self.screen, os.path.join("data", "lvls", "1"))
+            GLevelExec(self.screen, os.path.join("data", "lvls", "1")),
+            GLevelExec(self.screen, os.path.join("data", "lvls", "2")),
         ]
         load_data()
         self.start_animation = GBrutalTextAnimation(self.screen,
@@ -1182,7 +1204,8 @@ class GMain(GPygameMachine):
             self.bns = []
         self.bns += [
             TextButton(self.bn_new, [10, 350, 780, 40], "Новая игра"),
-            TextButton(self.bn_exit, [10, 400, 780, 40], "Выход")
+            TextButton(self.bn_demo, [10, 400, 780, 40], "Демо"),
+            TextButton(self.bn_exit, [10, 450, 780, 40], "Выход")
         ]
         self.sel = 0
 
@@ -1191,7 +1214,7 @@ class GMain(GPygameMachine):
             if self.act.exec() == 1:
                 self.exit_code = 1
 
-        self.queue.append(anim_start)
+        # self.queue.append(anim_start)
 
     def handle_input(self):
         for event in pg.event.get():
@@ -1235,7 +1258,7 @@ def log(mes, sender=None, father=None, say=print):
 def main(*args):
     global level_main
     m = GMain(*args)
-    # me = GLevelExec("data/testlevel.txt", *args)
+    # me = GLevelExec("data/map.txt", *args)
     return m.main()
 
 
